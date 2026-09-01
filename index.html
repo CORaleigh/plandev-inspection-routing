@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Inspection Routes | City of Raleigh</title>
+  <link rel="icon" href="assets/favicon.ico">
+  <link rel="stylesheet" href="assets/routes.css">
+</head>
+<body>
+  <header class="site-header">
+    <img class="city-logo" src="assets/raleigh-logo.png" alt="City of Raleigh">
+    <div>
+      <p class="department">Planning and Development</p>
+      <h1>Inspection routes</h1>
+    </div>
+  </header>
+
+  <main>
+    <section class="intro" aria-labelledby="route-heading">
+      <div>
+        <p class="eyebrow">Recommended inspection sequence</p>
+        <h2 id="route-heading">Routes for <span id="route-date"></span></h2>
+        <p id="route-description"></p>
+      </div>
+      <dl class="run-details">
+        <div><dt>Updated</dt><dd id="generated-at"></dd></div>
+        <div><dt>Method</dt><dd id="routing-method"></dd></div>
+      </dl>
+    </section>
+
+    <p class="rollover-note" id="rollover-note"></p>
+
+    <section class="controls" aria-label="Route filters">
+      <label for="inspector-filter">Inspector</label>
+      <select id="inspector-filter">
+        <option value="all">All inspectors</option>
+      </select>
+      <label for="route-search">Search</label>
+      <input id="route-search" type="search" placeholder="Address, inspection, permit, or type">
+      <button id="clear-filters" type="button">Clear</button>
+    </section>
+
+    <section class="summary" aria-label="Route summary">
+      <div><strong id="inspector-count">0</strong><span>Inspectors</span></div>
+      <div><strong id="stop-count">0</strong><span>Stops</span></div>
+      <div><strong id="inspection-count">0</strong><span>Inspections</span></div>
+      <div><strong id="rollover-count">0</strong><span>Rollover stops</span></div>
+    </section>
+
+    <section id="routes" aria-live="polite"></section>
+    <p id="empty-state" class="empty-state" hidden>No matching inspections.</p>
+  </main>
+
+  <footer>City of Raleigh Planning and Development</footer>
+
+  <script src="route-data.js"></script>
+  <script src="assets/routes.js"></script>
+</body>
+</html>

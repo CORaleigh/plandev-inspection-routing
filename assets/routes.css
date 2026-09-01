@@ -1,0 +1,245 @@
+:root {
+  --blue: #004b76;
+  --blue-dark: #00334f;
+  --green: #4b8f3d;
+  --green-light: #e8f1e5;
+  --ink: #24313a;
+  --muted: #5d6a72;
+  --line: #cbd5db;
+  --surface: #ffffff;
+  --background: #f3f6f7;
+  --rollover: #fff6db;
+  --warning: #8a5700;
+  font-family: Arial, Helvetica, sans-serif;
+  color: var(--ink);
+  background: var(--background);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--background);
+  line-height: 1.45;
+}
+
+.site-header {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 1rem clamp(1rem, 4vw, 3.5rem);
+  color: white;
+  background: var(--blue);
+  border-bottom: 5px solid var(--green);
+}
+
+.city-logo {
+  width: 155px;
+  height: auto;
+  padding: .45rem;
+  background: white;
+  border-radius: 4px;
+}
+
+.department,
+.site-header h1 { margin: 0; }
+.department { font-size: .82rem; letter-spacing: .08em; text-transform: uppercase; }
+.site-header h1 { font-size: clamp(1.55rem, 4vw, 2.25rem); }
+
+main {
+  width: min(1500px, calc(100% - 2rem));
+  margin: 1.5rem auto 3rem;
+}
+
+.intro {
+  display: flex;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: clamp(1rem, 3vw, 1.75rem);
+  background: var(--surface);
+  border-left: 6px solid var(--green);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 8%);
+}
+
+.eyebrow {
+  margin: 0 0 .25rem;
+  color: var(--green);
+  font-size: .8rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.intro h2 { margin: 0; color: var(--blue-dark); font-size: clamp(1.4rem, 3vw, 2rem); }
+.intro p:last-child { margin-bottom: 0; }
+
+.run-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(110px, auto));
+  gap: 1rem;
+  margin: 0;
+}
+
+.run-details div { padding-left: 1rem; border-left: 1px solid var(--line); }
+.run-details dt { color: var(--muted); font-size: .75rem; font-weight: 700; text-transform: uppercase; }
+.run-details dd { margin: .15rem 0 0; font-weight: 700; }
+
+.rollover-note {
+  margin: 1rem 0;
+  padding: .8rem 1rem;
+  color: #533800;
+  background: var(--rollover);
+  border: 1px solid #efd68b;
+  border-radius: 4px;
+  font-weight: 700;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: auto minmax(170px, 260px) auto minmax(230px, 1fr) auto;
+  align-items: center;
+  gap: .65rem;
+  margin: 1rem 0;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.controls label { font-weight: 700; }
+.controls select,
+.controls input,
+.controls button {
+  min-height: 42px;
+  padding: .55rem .7rem;
+  border: 1px solid #8da0aa;
+  border-radius: 3px;
+  font: inherit;
+}
+
+.controls button {
+  color: white;
+  background: var(--blue);
+  border-color: var(--blue);
+  cursor: pointer;
+}
+
+.controls button:hover { background: var(--blue-dark); }
+.controls :focus-visible { outline: 3px solid #f2c94c; outline-offset: 2px; }
+
+.summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: .75rem;
+  margin-bottom: 1.25rem;
+}
+
+.summary div {
+  display: flex;
+  align-items: baseline;
+  gap: .6rem;
+  padding: .85rem 1rem;
+  background: var(--surface);
+  border-top: 4px solid var(--blue);
+  box-shadow: 0 1px 5px rgb(0 0 0 / 7%);
+}
+
+.summary strong { color: var(--blue); font-size: 1.65rem; }
+.summary span { color: var(--muted); font-size: .9rem; }
+
+.inspector-route {
+  margin: 0 0 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 7%);
+}
+
+.inspector-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .85rem 1rem;
+  color: white;
+  background: var(--blue);
+}
+
+.inspector-heading h3 { margin: 0; font-size: 1.2rem; }
+.inspector-heading p { margin: 0; font-size: .88rem; }
+
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th,
+td { padding: .75rem; border: 1px solid var(--line); vertical-align: top; text-align: left; }
+th { color: white; background: #3e6254; font-size: .88rem; }
+tbody tr:nth-child(even) { background: #f7f9fa; }
+tbody tr.rollover { background: var(--rollover); }
+
+.sequence {
+  width: 6.5rem;
+  color: var(--blue-dark);
+  font-size: 1.1rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.rollover-star { color: var(--warning); }
+.address { min-width: 190px; }
+.address-review { color: #9b2c2c; font-weight: 700; }
+.item-list { display: grid; gap: .3rem; }
+.inspection-link { color: #006d77; font-weight: 700; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.inspection-link:hover { color: var(--blue-dark); }
+.status { color: var(--muted); font-size: .8rem; }
+
+.empty-state {
+  padding: 2rem;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+footer {
+  padding: 1.25rem;
+  color: white;
+  background: var(--blue-dark);
+  text-align: center;
+  font-size: .85rem;
+}
+
+@media (max-width: 850px) {
+  .intro { display: block; }
+  .run-details { margin-top: 1rem; }
+  .controls { grid-template-columns: auto 1fr; }
+  .controls button { grid-column: 1 / -1; }
+  .summary { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 650px) {
+  .site-header { gap: .85rem; padding: .85rem 1rem; }
+  .city-logo { width: 115px; }
+  main { width: min(100% - 1rem, 1500px); margin-top: .75rem; }
+  .run-details { grid-template-columns: 1fr; gap: .5rem; }
+  .summary { grid-template-columns: 1fr 1fr; }
+  .summary div { display: block; }
+  .summary span { display: block; }
+  .inspector-heading { display: block; }
+  .inspector-heading p { margin-top: .25rem; }
+  .table-wrap { overflow: visible; }
+  table,
+  tbody,
+  tr,
+  td { display: block; width: 100%; }
+  thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  tbody tr { margin: 0; padding: .75rem; border-bottom: 2px solid var(--line); }
+  td { display: grid; grid-template-columns: 8.5rem 1fr; gap: .65rem; padding: .45rem 0; border: 0; }
+  td::before { content: attr(data-label); color: var(--muted); font-size: .76rem; font-weight: 700; text-transform: uppercase; }
+  td.sequence { width: 100%; }
+}
+
+@media print {
+  .site-header { color: var(--ink); background: white; border-bottom: 2px solid var(--green); }
+  .controls,
+  footer { display: none; }
+  main { width: 100%; margin: 0; }
+  .inspector-route { break-inside: avoid; box-shadow: none; }
+}
