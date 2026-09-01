@@ -19,7 +19,7 @@ from .core import DEFAULT_OUTPUT, POC_ROOT, clean, is_true
 
 DEFAULT_TEMPLATE = POC_ROOT / "index.html"
 DEFAULT_ASSETS = POC_ROOT / "assets"
-DEFAULT_SITE_OUTPUT = DEFAULT_OUTPUT / "site"
+DEFAULT_SITE_OUTPUT = POC_ROOT
 INSPECTION_URL = (
     "https://raleighnc-energov.tylerhost.net/apps/manageinspection/"
     "#/inspection/{inspection_id}/details"
@@ -195,7 +195,8 @@ def build_route_page(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     destination_assets = output_dir / "assets"
-    shutil.copytree(assets_dir, destination_assets, dirs_exist_ok=True)
+    if assets_dir.resolve() != destination_assets.resolve():
+        shutil.copytree(assets_dir, destination_assets, dirs_exist_ok=True)
 
     data_path = output_dir / "route-data.js"
     data_temporary = data_path.with_suffix(".js.tmp")
@@ -208,12 +209,13 @@ def build_route_page(
     data_temporary.replace(data_path)
 
     output_path = output_dir / "index.html"
-    temporary = output_path.with_suffix(".html.tmp")
-    temporary.write_text(
-        template_path.read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    temporary.replace(output_path)
+    if template_path.resolve() != output_path.resolve():
+        temporary = output_path.with_suffix(".html.tmp")
+        temporary.write_text(
+            template_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        temporary.replace(output_path)
     return output_path
 
 

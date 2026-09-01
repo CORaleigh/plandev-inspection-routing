@@ -131,7 +131,7 @@ Build it from a specific snapshot or into a different web root:
 python poc\build_route_page.py --input poc\output\route-plan-2026-09-02.json --output-dir poc\output\site
 ```
 
-The committed frontend is `poc/index.html` with static files in `poc/assets`. The builder copies them to `poc/output/site`, adds an ignored `route-data.js`, and leaves the daily JSON archive outside Git. The page includes inspector and text filters, responsive tables, rollover markers, and inspection-number links to EnerGov. `poc/data/holidays.csv` is commit-safe reference data.
+The default build writes `poc/route-data.js` beside the committed `index.html` and assets so GitHub Pages can load the latest snapshot. Commit only this current-data file; daily JSON archives and other runtime output remain ignored. Because GitHub Pages and repository history may be public, confirm that publishing inspector routes and addresses is approved. The page includes inspector and text filters, responsive tables, rollover markers, and links to EnerGov inspections and permits. `poc/data/holidays.csv` is commit-safe reference data.
 
 ## Routing methods
 

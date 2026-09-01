@@ -62,10 +62,10 @@ read-only and does not write changes back to EnerGov.
 ### Simple daily web view
 
 The POC now writes a daily JSON route snapshot and generates a static site from
-it. The committed `index.html` and static assets contain no route data. The
-builder copies them to the ignored output directory and adds a generated
-`route-data.js` for the current snapshot. The web host, access controls,
-snapshot location, and retention period remain to be decided.
+it. Daily JSON archives remain ignored. The builder writes the latest snapshot
+to `route-data.js` at the repository root so the committed GitHub Pages site can
+load it. Publishing this file exposes its route data through the site and Git
+history, so access and retention approval is required before production use.
 
 ### Power Automate from a cached snapshot
 
