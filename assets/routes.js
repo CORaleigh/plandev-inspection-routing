@@ -197,7 +197,6 @@
 
   document.getElementById("route-date").textContent = formatDate(data.routeDate);
   document.getElementById("generated-at").textContent = formatDateTime(data.generatedAt);
-  document.getElementById("routing-method").textContent = data.routingMethod;
   document.getElementById("route-description").textContent =
     "Use this recommended order to complete inspections. Inspectors assign times themselves.";
   document.getElementById("rollover-note").textContent =
