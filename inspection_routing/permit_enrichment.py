@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -17,10 +18,13 @@ from .publishing import PERMIT_URL, latest_snapshot, write_json_atomic
 from .sources import (
     api_detail_to_canonical,
     case_insensitive_get,
+    default_inspection_search_criteria,
     inspection_link_type_names,
     inspection_search_setup,
     load_api_credentials,
+    set_case_insensitive,
     unwrap_webapi_result,
+    webapi_rows,
 )
 
 
@@ -129,6 +133,140 @@ def _snapshot_inspections(
     return inspections
 
 
+def _confirm_inspection(
+    client: object,
+    criteria: Mapping[str, object],
+    inspection_id: str,
+    inspection_number: str,
+) -> tuple[str, str]:
+    """Return found, missing, or unknown from an exact number search."""
+
+    if not inspection_number:
+        return "unknown", "snapshot inspection number is blank"
+    payload = copy.deepcopy(dict(criteria))
+    for name, value in (
+        ("pageNumber", 1),
+        ("pageSize", 10),
+        ("criteriaName", "Permit enrichment existence check"),
+        ("inspectionNumber", inspection_number),
+    ):
+        set_case_insensitive(payload, name, value)
+    response = client.call(
+        "POST", "/api/inspections/search/search", payload
+    )
+    rows, page_count = webapi_rows(
+        response, f"Inspection existence search for {inspection_number}"
+    )
+    exact = [
+        row
+        for row in rows
+        if clean(
+            case_insensitive_get(row, "inspectionNumber", default="")
+        ).casefold()
+        == inspection_number.casefold()
+    ]
+    if any(
+        clean(
+            case_insensitive_get(
+                row, "imInspectionID", "inspectionID", default=""
+            )
+        ).casefold()
+        == inspection_id.casefold()
+        for row in exact
+    ):
+        return "found", ""
+    if exact:
+        ids = sorted(
+            {
+                clean(
+                    case_insensitive_get(
+                        row,
+                        "imInspectionID",
+                        "inspectionID",
+                        default="",
+                    )
+                )
+                for row in exact
+            }
+            - {""}
+        )
+        return (
+            "unknown",
+            "inspection number now resolves to a different ID"
+            + (f": {', '.join(ids)}" if ids else ""),
+        )
+    if page_count > 1:
+        return "unknown", "exact match was not present on the first page"
+    return "missing", ""
+
+
+def _remove_snapshot_inspections(
+    snapshot: dict[str, object], inspection_ids: set[str]
+) -> int:
+    """Remove confirmed-missing inspections and repair snapshot counts."""
+
+    removed = 0
+    kept_inspectors: list[dict[str, object]] = []
+    for inspector in snapshot.get("inspectors", []):
+        if not isinstance(inspector, dict):
+            continue
+        kept_stops: list[dict[str, object]] = []
+        for stop in inspector.get("stops", []):
+            if not isinstance(stop, dict):
+                continue
+            rows = stop.get("inspections", [])
+            if not isinstance(rows, list):
+                continue
+            kept_rows = [
+                row
+                for row in rows
+                if not (
+                    isinstance(row, Mapping)
+                    and clean(row.get("id")) in inspection_ids
+                )
+            ]
+            removed += len(rows) - len(kept_rows)
+            if not kept_rows:
+                continue
+            stop["inspections"] = kept_rows
+            stop["inspectionCount"] = len(kept_rows)
+            kept_stops.append(stop)
+        if not kept_stops:
+            continue
+        for sequence, stop in enumerate(kept_stops, start=1):
+            stop["sequence"] = sequence
+        inspector["stops"] = kept_stops
+        inspector["stopCount"] = len(kept_stops)
+        inspector["inspectionCount"] = sum(
+            int(stop["inspectionCount"]) for stop in kept_stops
+        )
+        inspector["rolloverStopCount"] = sum(
+            bool(stop.get("isRollover")) for stop in kept_stops
+        )
+        kept_inspectors.append(inspector)
+
+    snapshot["inspectors"] = kept_inspectors
+    all_stops = [
+        stop
+        for inspector in kept_inspectors
+        for stop in inspector["stops"]
+    ]
+    snapshot["summary"] = {
+        "inspectorCount": len(kept_inspectors),
+        "stopCount": len(all_stops),
+        "inspectionCount": sum(
+            int(stop["inspectionCount"]) for stop in all_stops
+        ),
+        "rolloverStopCount": sum(
+            bool(stop.get("isRollover")) for stop in all_stops
+        ),
+        "addressReviewCount": sum(
+            bool(stop.get("needsAddressReview")) for stop in all_stops
+        ),
+    }
+    return removed
+
+
 def _permit_resolution(
     detail: Mapping[str, object], link_type_names: Mapping[str, str]
 ) -> PermitResolution:
@@ -179,13 +317,24 @@ def _update_metadata(
     cache_hits: int,
     api_requests: int,
     inspections_without_permit: int,
+    api_failures: int = 0,
+    confirmation_searches: int = 0,
+    failures: list[dict[str, str]] | None = None,
+    removed: list[dict[str, str]] | None = None,
 ) -> None:
+    failure_rows = failures or []
+    removed_rows = removed or []
     snapshot["permitEnrichment"] = {
         "status": status,
         "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "candidateInspectionIds": candidate_ids,
         "cacheHits": cache_hits,
         "apiDetailRequests": api_requests,
+        "apiDetailAttempts": api_requests + api_failures,
+        "apiDetailFailures": api_failures,
+        "confirmationSearches": confirmation_searches,
+        "failedInspections": failure_rows,
+        "removedInspections": removed_rows,
         "inspectionsWithoutDirectPermit": inspections_without_permit,
     }
 
@@ -259,10 +408,17 @@ def enrich_route_permits(
 
     link_types: dict[str, str] = {}
     api_requests = 0
+    api_failures = 0
+    confirmation_searches = 0
+    failures: list[dict[str, str]] = []
+    removed: list[dict[str, str]] = []
+    confirmation_criteria: dict[str, object] | None = None
+    confirmation_criteria_error = ""
+    confirmation_criteria_loaded = False
     if unresolved:
         link_types = inspection_link_type_names(inspection_search_setup(client))
     for position, inspection_id in enumerate(unresolved, start=1):
-        if api_requests and request_delay_seconds:
+        if position > 1 and request_delay_seconds:
             sleep(request_delay_seconds)
         try:
             response = client.get_inspection(inspection_id)
@@ -278,6 +434,68 @@ def enrich_route_permits(
             )
             api_requests += 1
         except Exception as error:
+            api_failures += 1
+            inspection_number = clean(
+                references[inspection_id][0].get("number")
+            )
+            confirmation = "unknown"
+            confirmation_error = ""
+            if not confirmation_criteria_loaded:
+                confirmation_criteria_loaded = True
+                try:
+                    confirmation_criteria = (
+                        default_inspection_search_criteria(client)
+                    )
+                except Exception as criteria_error:
+                    confirmation_criteria_error = clean(criteria_error)[:500]
+            if confirmation_criteria is not None:
+                try:
+                    if request_delay_seconds:
+                        sleep(request_delay_seconds)
+                    confirmation_searches += 1
+                    confirmation, confirmation_error = _confirm_inspection(
+                        client,
+                        confirmation_criteria,
+                        inspection_id,
+                        inspection_number,
+                    )
+                except Exception as search_error:
+                    confirmation_error = clean(search_error)[:500]
+            else:
+                confirmation_error = confirmation_criteria_error
+
+            if confirmation == "missing":
+                removed.append(
+                    {
+                        "inspectionId": inspection_id,
+                        "inspectionNumber": inspection_number,
+                        "reason": (
+                            "detail failed and exact inspection-number "
+                            "search returned no record"
+                        ),
+                    }
+                )
+                _remove_snapshot_inspections(snapshot, {inspection_id})
+                rows = _snapshot_inspections(snapshot)
+                progress(
+                    f"Permit enrichment removed {inspection_number or inspection_id}: "
+                    "the detail request failed and an exact search found no "
+                    "current inspection."
+                )
+            else:
+                failures.append(
+                    {
+                        "inspectionId": inspection_id,
+                        "inspectionNumber": inspection_number,
+                        "detailError": clean(error)[:500],
+                        "confirmation": confirmation,
+                        "confirmationError": confirmation_error,
+                    }
+                )
+                progress(
+                    f"Permit enrichment warning: inspection {inspection_id} "
+                    f"failed but was retained; confirmation was {confirmation}."
+                )
             without_permit = sum(
                 not clean(row.get("permitNumber")) for row in rows
             )
@@ -288,14 +506,13 @@ def enrich_route_permits(
                 cache_hits=cache_hits,
                 api_requests=api_requests,
                 inspections_without_permit=without_permit,
+                api_failures=api_failures,
+                confirmation_searches=confirmation_searches,
+                failures=failures,
+                removed=removed,
             )
             write_json_atomic(snapshot, snapshot_path)
-            raise RuntimeError(
-                f"Inspection {inspection_id} failed after {api_requests:,} "
-                "successful API detail request(s). Cached and snapshot "
-                "progress were preserved; rerun the same command to resume: "
-                f"{error}"
-            ) from error
+            continue
         if position % checkpoint_every == 0:
             write_json_atomic(snapshot, snapshot_path)
             progress(
@@ -306,11 +523,15 @@ def enrich_route_permits(
     without_permit = sum(not clean(row.get("permitNumber")) for row in rows)
     _update_metadata(
         snapshot,
-        status="complete",
+        status="partial" if failures else "complete",
         candidate_ids=len(references),
         cache_hits=cache_hits,
         api_requests=api_requests,
         inspections_without_permit=without_permit,
+        api_failures=api_failures,
+        confirmation_searches=confirmation_searches,
+        failures=failures,
+        removed=removed,
     )
     write_json_atomic(snapshot, snapshot_path)
     metrics = {
@@ -318,13 +539,22 @@ def enrich_route_permits(
         "candidateInspectionIds": len(references),
         "cacheHits": cache_hits,
         "apiRequests": api_requests,
+        "apiAttempts": api_requests + api_failures,
+        "apiFailures": api_failures,
+        "confirmationSearches": confirmation_searches,
+        "removedInspections": len(removed),
+        "unconfirmedFailures": len(failures),
         "missingInspectionIds": missing_ids,
         "inspectionsWithoutPermit": without_permit,
     }
     progress(
         "Permit enrichment completed: "
-        f"{api_requests:,} API request(s), {cache_hits:,} cache hit(s), "
-        f"{without_permit:,} inspection(s) without a direct permit."
+        f"{api_requests:,} successful API request(s), "
+        f"{cache_hits:,} cache hit(s), "
+        f"{api_failures:,} failed detail request(s), "
+        f"{len(removed):,} confirmed-missing inspection(s), "
+        f"{len(failures):,} unconfirmed failure(s), {without_permit:,} "
+        "inspection(s) without a direct permit."
     )
     return metrics
 
@@ -356,8 +586,10 @@ def main(argv: list[str] | None = None) -> None:
             preview = json.loads(snapshot_path.read_text(encoding="utf-8"))
             if not isinstance(preview, dict):
                 raise ValueError("Unsupported route snapshot schema")
-            if preview.get("source") != "api":
-                raise ValueError("Permit enrichment requires an API snapshot")
+            if preview.get("source") not in {"api", "snapshot"}:
+                raise ValueError(
+                    "Permit enrichment requires an API-derived snapshot"
+                )
             snapshot_environment = clean(preview.get("environment"))
             environment = args.environment or snapshot_environment
             if not environment:
@@ -394,6 +626,18 @@ def main(argv: list[str] | None = None) -> None:
                 f"{metrics['inspectionCount'] - metrics['inspectionsWithoutPermit']:,}/"
                 f"{metrics['inspectionCount']:,} inspection(s)"
             )
+            if metrics["removedInspections"]:
+                print(
+                    "Confirmed-missing inspections removed: "
+                    f"{metrics['removedInspections']:,}. Details are "
+                    "recorded in the snapshot."
+                )
+            if metrics["unconfirmedFailures"]:
+                print(
+                    "Unconfirmed permit detail failures retained: "
+                    f"{metrics['unconfirmedFailures']:,}. They will be "
+                    "retried the next time this command runs."
+                )
         except (
             FileNotFoundError,
             OSError,

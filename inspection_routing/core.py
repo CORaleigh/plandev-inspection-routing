@@ -20,6 +20,7 @@ DEFAULT_QUERY = POC_ROOT / "queries" / "inspections_for_routing.sql"
 DEFAULT_OUTPUT = POC_ROOT / "output"
 DEFAULT_DOTENV = PROJECT_ROOT / ".env"
 DEFAULT_HOLIDAYS = POC_ROOT / "data" / "holidays.csv"
+DEFAULT_ROUTING_CACHE = POC_ROOT / "runtime-data" / "routing"
 RALEIGH_TIME_ZONE = ZoneInfo("America/New_York")
 ROLLED_INSPECTION_CUSTOM_FIELD_ID = (
     "6efd8044-33cd-4365-91f4-ecd6c2bc72e1"
@@ -40,6 +41,7 @@ CANONICAL_COLUMNS = [
     "MainAddressLine1",
     "MainAddressLine2",
     "MainAddressLine3",
+    "AddressCSAID",
     "RolledInspectionCheckbox",
 ]
 

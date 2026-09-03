@@ -18,6 +18,7 @@ from .core import (
     DEFAULT_HOLIDAYS,
     DEFAULT_OUTPUT,
     DEFAULT_QUERY,
+    DEFAULT_ROUTING_CACHE,
     INSPECTION_PROFILES,
     next_business_day,
     parse_date,
@@ -25,6 +26,7 @@ from .core import (
 )
 from .routing import (
     ROUTING_METHODS,
+    build_route_planner,
     create_route_plan,
     summarize_inspection_estimate,
 )
@@ -41,6 +43,7 @@ from .sources import (
     load_database_inspections,
     load_holidays_from_csv,
     load_holidays_from_database,
+    load_snapshot_inspections,
     holidays_to_frame,
 )
 
@@ -321,8 +324,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--method",
         choices=sorted(ROUTING_METHODS),
-        default="alphabetical",
-        help="routing method within rollover and route-date tiers",
+        default="euclidean",
+        help="stop-order method (default: euclidean)",
     )
     parser.add_argument(
         "--inspection-profile",
@@ -335,13 +338,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--source",
-        choices=("database", "csv", "api"),
+        choices=("database", "csv", "api", "snapshot"),
         default="database",
         help="inspection source (default: database)",
     )
     parser.add_argument("--env", type=Path, default=DEFAULT_ENV)
     parser.add_argument("--query", type=Path, default=DEFAULT_QUERY)
-    parser.add_argument("--input", type=Path, default=DEFAULT_CACHE)
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=DEFAULT_CACHE,
+        help="inspection CSV or archived route-plan JSON",
+    )
     parser.add_argument(
         "--environment",
         choices=("prod", "train", "test"),
@@ -388,6 +396,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "HOLIDAY table"
         ),
     )
+    parser.add_argument(
+        "--routing-cache-dir",
+        type=Path,
+        default=DEFAULT_ROUTING_CACHE,
+        help="ignored cache for MAR and Wake Streets responses",
+    )
+    parser.add_argument("--routing-cache-days", type=int, default=7)
+    parser.add_argument("--routing-time-limit-seconds", type=int, default=10)
+    parser.add_argument("--network-buffer-miles", type=float, default=5.0)
+    parser.add_argument("--network-max-snap-feet", type=float, default=1000.0)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     return parser.parse_args(argv)
 
@@ -397,21 +415,51 @@ def run(args: argparse.Namespace) -> Path:
 
     connection = None
     api_metrics: dict[str, object] = {}
+    snapshot_input: Path | None = None
+    effective_profile = args.inspection_profile
+    effective_environment = args.environment
     try:
-        holiday_csv = args.holiday_csv
-        if holiday_csv is None and DEFAULT_HOLIDAYS.is_file():
-            holiday_csv = DEFAULT_HOLIDAYS
-        if holiday_csv:
-            holidays_by_date = load_holidays_from_csv(
-                holiday_csv.resolve()
-            )
+        if args.source == "snapshot":
+            snapshot_input = args.input.resolve()
+            (
+                inspections,
+                snapshot_target_date,
+                snapshot_source_date,
+                snapshot_metadata,
+            ) = load_snapshot_inspections(snapshot_input)
+            if args.date is not None and args.date != snapshot_target_date:
+                raise ValueError(
+                    f"--date {args.date} does not match snapshot route date "
+                    f"{snapshot_target_date}"
+                )
+            if args.as_of is not None and args.as_of != snapshot_source_date:
+                raise ValueError(
+                    f"--as-of {args.as_of} does not match snapshot rollover "
+                    f"source date {snapshot_source_date}"
+                )
+            target_date = snapshot_target_date
+            source_date = snapshot_source_date
+            snapshot_profile = snapshot_metadata["inspectionProfile"]
+            if snapshot_profile in INSPECTION_PROFILES:
+                if args.inspection_profile == "all":
+                    effective_profile = snapshot_profile
+            if snapshot_metadata["environment"]:
+                effective_environment = snapshot_metadata["environment"]
         else:
-            connection = connect_database(args.env.resolve())
-            holidays_by_date = load_holidays_from_database(connection)
+            holiday_csv = args.holiday_csv
+            if holiday_csv is None and DEFAULT_HOLIDAYS.is_file():
+                holiday_csv = DEFAULT_HOLIDAYS
+            if holiday_csv:
+                holidays_by_date = load_holidays_from_csv(
+                    holiday_csv.resolve()
+                )
+            else:
+                connection = connect_database(args.env.resolve())
+                holidays_by_date = load_holidays_from_database(connection)
 
-        target_date, source_date = resolve_planning_dates(
-            args.date, args.as_of, set(holidays_by_date)
-        )
+            target_date, source_date = resolve_planning_dates(
+                args.date, args.as_of, set(holidays_by_date)
+            )
 
         if args.source == "database":
             if connection is None:
@@ -426,7 +474,7 @@ def run(args: argparse.Namespace) -> Path:
             inspections = load_cached_inspections(
                 args.input.resolve(), source_date, target_date
             )
-        else:
+        elif args.source == "api":
             username, password = load_api_credentials(
                 args.env_file.resolve()
             )
@@ -447,7 +495,7 @@ def run(args: argparse.Namespace) -> Path:
                         max_scan_records=args.api_max_scan_records,
                         detail_mode=args.api_detail_mode,
                         inspectors=args.inspector,
-                        inspection_profile=args.inspection_profile,
+                        inspection_profile=effective_profile,
                         search_metrics=api_metrics,
                     )
             except Exception as error:
@@ -455,13 +503,21 @@ def run(args: argparse.Namespace) -> Path:
                     f"{args.environment.upper()} WebAPI load failed: {error}"
                 ) from None
 
+        planner = build_route_planner(
+            cache_dir=args.routing_cache_dir.resolve(),
+            cache_days=args.routing_cache_days,
+            time_limit_seconds=args.routing_time_limit_seconds,
+            network_buffer_miles=args.network_buffer_miles,
+            network_max_snap_feet=args.network_max_snap_feet,
+        )
         detail, stops = create_route_plan(
             inspections,
             target_date,
             source_date,
             inspectors=None if args.source == "api" else args.inspector,
-            inspection_profile=args.inspection_profile,
+            inspection_profile=effective_profile,
             method=args.method,
+            planner=planner,
         )
 
         if args.source == "api" and args.api_detail_mode == "none":
@@ -482,25 +538,46 @@ def run(args: argparse.Namespace) -> Path:
                 )
 
         output_dir = args.output_dir.resolve()
-        snapshot_path = output_dir / route_snapshot_filename(
-            target_date, args.inspector
-        )
+        snapshot_name = route_snapshot_filename(target_date, args.inspector)
+        if args.source == "snapshot":
+            snapshot_name = (
+                f"{Path(snapshot_name).stem}-rerouted-{args.method}.json"
+            )
+        snapshot_path = output_dir / snapshot_name
+        if args.source == "snapshot" and snapshot_path.exists():
+            sequence = 2
+            while True:
+                candidate = snapshot_path.with_name(
+                    f"{snapshot_path.stem}-{sequence}{snapshot_path.suffix}"
+                )
+                if not candidate.exists():
+                    snapshot_path = candidate
+                    break
+                sequence += 1
+        methods = ", ".join(sorted(stops["RoutingMethod"].unique()))
         snapshot = build_route_snapshot(
             detail,
             stops,
             target_date,
             source_date,
-            routing_method=args.method,
-            inspection_profile=args.inspection_profile,
+            routing_method=methods,
+            inspection_profile=effective_profile,
             source=args.source,
-            environment=args.environment,
+            environment=effective_environment,
         )
         write_json_atomic(snapshot, snapshot_path)
 
+        if snapshot_input is not None:
+            print(f"Snapshot input: {snapshot_input}")
         print(f"Route date: {target_date}")
         print(f"Rollover source date: {source_date}")
-        print(f"Routing method: {args.method}")
-        print(f"Inspection profile: {args.inspection_profile}")
+        print(f"Routing method: {methods}")
+        fallback_count = int(
+            stops["RoutingFallbackReason"].map(str).str.strip().ne("").sum()
+        )
+        if fallback_count:
+            print(f"Routing fallbacks: {fallback_count} stop(s)")
+        print(f"Inspection profile: {effective_profile}")
         if args.source == "api":
             print(
                 "API candidates: "

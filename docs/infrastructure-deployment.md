@@ -26,7 +26,7 @@ is not a statement that the production process has been approved or deployed.
 Windows Task Scheduler
         -> Python retrieval and validation
         -> EnerGov WebAPI search
-        -> Routing service
+        -> MAR address resolution and routing service
         -> Daily JSON route snapshot
         -> Static inspector route page
 ```
@@ -89,9 +89,10 @@ the script.
 - Preserve the last successful snapshot with its generation time and route
   date. Any web view must clearly identify stale data rather than presenting it
   as current.
-- If the GIS route service fails after valid inspection data is retrieved, use
-  the existing alphabetical-address method and label the result as a fallback
-  route.
+- If MAR, Wake Streets, or the selected spatial method fails after valid
+  inspection data is retrieved, use alphabetical order and record the fallback
+  reason. Euclidean State Plane routing is the default; Wake network routing is
+  optional because it is more expensive.
 - If EnerGov authentication, retrieval, or validation fails, do not publish a
   new route as successful. Preserve the prior snapshot, return a failing process
   exit code, and produce a concise operational log for support.

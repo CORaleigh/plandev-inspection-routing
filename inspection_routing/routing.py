@@ -4,16 +4,25 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import date
+import math
+from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 import pandas as pd
 
 from .core import (
     CANONICAL_COLUMNS,
+    DEFAULT_ROUTING_CACHE,
     clean,
     filter_inspection_profile,
     is_true,
     unique_join,
+)
+from .geospatial import (
+    MARAddressResolver,
+    RoutingDataError,
+    WakeStreetNetworkProvider,
+    normalized_text,
 )
 
 
@@ -26,13 +35,15 @@ def select_route_inspections(
 ) -> pd.DataFrame:
     """Select route-date work plus incomplete source-day work."""
 
-    missing = set(CANONICAL_COLUMNS).difference(inspections.columns)
+    selected = inspections.copy()
+    if "AddressCSAID" not in selected and "MainAddressLine3" in selected:
+        selected["AddressCSAID"] = selected["MainAddressLine3"]
+    missing = set(CANONICAL_COLUMNS).difference(selected.columns)
     if missing:
         raise ValueError(
             f"Missing input columns: {', '.join(sorted(missing))}"
         )
 
-    selected = inspections.copy()
     scheduled = pd.to_datetime(
         selected["ScheduleDate"], errors="coerce"
     ).dt.date
@@ -125,13 +136,11 @@ def select_route_inspections(
             f"{target_date} or incomplete on {source_date}"
         )
 
-    address_columns = [
-        "MainAddressLine1",
-        "MainAddressLine2",
-        "MainAddressLine3",
-    ]
+    address_columns = ["MainAddressLine1", "MainAddressLine2"]
     for column in address_columns:
         selected[column] = selected[column].map(clean)
+    selected["MainAddressLine3"] = selected["MainAddressLine3"].map(clean)
+    selected["AddressCSAID"] = selected["AddressCSAID"].map(clean)
     selected["AddressDisplay"] = selected[address_columns].apply(
         lambda row: ", ".join(value for value in row if value), axis=1
     )
@@ -147,6 +156,14 @@ def select_route_inspections(
         ].astype(str).str.casefold()
     )
     selected["_AddressKey"] = address_key
+    selected["MARBaseAddress"] = ""
+    selected["MARBaseAddressKey"] = ""
+    selected["ResolvedAddressCSAID"] = ""
+    selected["AddressResolutionMethod"] = "not_requested"
+    selected["MARSegmentUUID"] = ""
+    selected["RoutingX"] = math.nan
+    selected["RoutingY"] = math.nan
+    selected["RoutingAddressDisplay"] = selected["AddressDisplay"]
     selected["_StopKey"] = (
         selected["Inspector"].str.casefold() + "||" + address_key
     )
@@ -163,7 +180,16 @@ def build_stops(inspections: pd.DataFrame) -> pd.DataFrame:
         MainAddressLine1=("MainAddressLine1", "first"),
         MainAddressLine2=("MainAddressLine2", "first"),
         MainAddressLine3=("MainAddressLine3", "first"),
-        AddressDisplay=("AddressDisplay", "first"),
+        AddressDisplay=("RoutingAddressDisplay", "first"),
+        OriginalAddresses=("AddressDisplay", unique_join),
+        AddressCSAIDs=("AddressCSAID", unique_join),
+        ResolvedAddressCSAIDs=("ResolvedAddressCSAID", unique_join),
+        AddressResolutionMethods=("AddressResolutionMethod", unique_join),
+        MARBaseAddress=("MARBaseAddress", "first"),
+        MARBaseAddressKey=("MARBaseAddressKey", "first"),
+        MARSegmentUUIDs=("MARSegmentUUID", unique_join),
+        RoutingX=("RoutingX", "mean"),
+        RoutingY=("RoutingY", "mean"),
         InspectionCount=("InspectionID", "size"),
         InspectionIDs=("InspectionID", unique_join),
         InspectionNumbers=("InspectionNumber", unique_join),
@@ -190,6 +216,9 @@ def summarize_inspection_estimate(
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """Summarize likely next-day work by date, inspector, type, and status."""
 
+    inspections = inspections.copy()
+    if "AddressCSAID" not in inspections and "MainAddressLine3" in inspections:
+        inspections["AddressCSAID"] = inspections["MainAddressLine3"]
     missing = set(CANONICAL_COLUMNS).difference(inspections.columns)
     if missing:
         raise ValueError(
@@ -279,12 +308,18 @@ def summarize_inspection_estimate(
 
 
 class RoutingService(ABC):
-    """Order one inspector's stops within a single priority tier."""
+    """Order one inspector's complete start-point-to-start-point route."""
 
     name: str
 
     def __call__(self, stops: pd.DataFrame) -> pd.DataFrame:
         return self.route(stops)
+
+    def prepare_inspections(self, inspections: pd.DataFrame) -> pd.DataFrame:
+        return inspections
+
+    def prepare(self, stops: pd.DataFrame) -> None:
+        return None
 
     @abstractmethod
     def route(self, stops: pd.DataFrame) -> pd.DataFrame:
@@ -292,20 +327,204 @@ class RoutingService(ABC):
 
 
 class AlphabeticalRoutingService(RoutingService):
-    """Deterministic placeholder that orders stops by address."""
+    """Deterministic legacy and spatial-data fallback."""
 
     name = "alphabetical"
 
     def route(self, stops: pd.DataFrame) -> pd.DataFrame:
-        return stops.sort_values(
-            ["AddressDisplay", "_StopKey"],
-            kind="stable",
-            key=lambda values: values.str.casefold(),
+        sortable = stops.assign(
+            _SortAddress=stops["AddressDisplay"].map(clean).str.casefold()
         )
+        return sortable.sort_values(
+            ["RoutePriority", "_SortAddress", "_StopKey"], kind="stable"
+        ).drop(columns="_SortAddress")
+
+
+def solve_closed_route(
+    matrix: Sequence[Sequence[int]],
+    rollover_flags: Sequence[bool],
+    seed_order: Sequence[int],
+    time_limit_seconds: int,
+) -> list[int]:
+    """Solve one closed route while placing every rollover before normals."""
+
+    count = len(rollover_flags)
+    if count < 2:
+        return list(range(count))
+    if len(matrix) != count + 1 or any(
+        len(row) != count + 1 for row in matrix
+    ):
+        raise ValueError("Routing matrix dimensions do not match the stops")
+    try:
+        from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+    except ModuleNotFoundError as error:
+        raise RoutingDataError("Euclidean and network routing require ortools") from error
+
+    manager = pywrapcp.RoutingIndexManager(count + 1, 1, 0)
+    model = pywrapcp.RoutingModel(manager)
+
+    def distance(from_index: int, to_index: int) -> int:
+        return int(
+            matrix[manager.IndexToNode(from_index)][manager.IndexToNode(to_index)]
+        )
+
+    callback = model.RegisterTransitCallback(distance)
+    model.SetArcCostEvaluatorOfAllVehicles(callback)
+    model.AddConstantDimension(1, count + 2, True, "VisitOrder")
+    order = model.GetDimensionOrDie("VisitOrder")
+    rollover_nodes = [index + 1 for index, value in enumerate(rollover_flags) if value]
+    normal_nodes = [index + 1 for index, value in enumerate(rollover_flags) if not value]
+    for rollover_node in rollover_nodes:
+        for normal_node in normal_nodes:
+            model.solver().Add(
+                order.CumulVar(manager.NodeToIndex(rollover_node))
+                < order.CumulVar(manager.NodeToIndex(normal_node))
+            )
+
+    parameters = pywrapcp.DefaultRoutingSearchParameters()
+    parameters.first_solution_strategy = (
+        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    )
+    parameters.local_search_metaheuristic = (
+        routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+    )
+    parameters.time_limit.seconds = max(1, int(time_limit_seconds))
+
+    ranks = list(seed_order)
+    if len(ranks) != count:
+        ranks = list(range(count))
+    seed = sorted(
+        rollover_nodes, key=lambda node: (ranks[node - 1], node)
+    ) + sorted(normal_nodes, key=lambda node: (ranks[node - 1], node))
+    model.CloseModelWithParameters(parameters)
+    initial = model.ReadAssignmentFromRoutes([seed], True)
+    if initial is None:
+        raise RoutingDataError("Could not construct a rollover-first route")
+    solution = model.SolveFromAssignmentWithParameters(initial, parameters)
+    if solution is None:
+        raise RoutingDataError("Could not optimize the seeded route")
+
+    result: list[int] = []
+    index = model.Start(0)
+    while not model.IsEnd(index):
+        index = solution.Value(model.NextVar(index))
+        node = manager.IndexToNode(index)
+        if node:
+            result.append(node - 1)
+    return result
+
+
+class SpatialRoutingService(RoutingService):
+    """Base class for methods that share current MAR address resolution."""
+
+    def __init__(
+        self, resolver: MARAddressResolver, *, time_limit_seconds: int = 10
+    ) -> None:
+        self.resolver = resolver
+        self.time_limit_seconds = time_limit_seconds
+        self.start_point: tuple[float, float] | None = None
+
+    def prepare_inspections(self, inspections: pd.DataFrame) -> pd.DataFrame:
+        resolved = self.resolver.resolve_frame(inspections)
+        base = resolved["MARBaseAddressKey"].map(clean)
+        address = resolved["AddressDisplay"].map(normalized_text)
+        usable = resolved["HasUsableAddress"]
+        location = base.where(base.ne(""), address)
+        location = location.where(
+            usable,
+            "inspection:" + resolved["InspectionID"].astype(str).str.casefold(),
+        )
+        resolved["_AddressKey"] = location
+        resolved["_StopKey"] = (
+            resolved["Inspector"].str.casefold() + "||" + location
+        )
+        city = resolved["MainAddressLine2"].map(clean)
+        resolved["RoutingAddressDisplay"] = [
+            ", ".join(part for part in (clean(base_address), city_text) if part)
+            if clean(base_address)
+            else original
+            for base_address, city_text, original in zip(
+                resolved["MARBaseAddress"], city, resolved["AddressDisplay"]
+            )
+        ]
+        return resolved
+
+    def _prepare_start_point(self) -> tuple[float, float]:
+        result = self.resolver.resolve_start_point()
+        self.start_point = (float(result.x), float(result.y))
+        return self.start_point
+
+    def _order(self, stops: pd.DataFrame, matrix: Sequence[Sequence[int]]) -> pd.DataFrame:
+        seed = list(range(len(stops)))
+        order = solve_closed_route(
+            matrix,
+            stops["IsRolledStop"].map(bool).tolist(),
+            seed,
+            self.time_limit_seconds,
+        )
+        return stops.iloc[order]
+
+
+class EuclideanRoutingService(SpatialRoutingService):
+    """Optimize straight-line distance in EPSG:2264 feet."""
+
+    name = "euclidean"
+
+    def prepare(self, stops: pd.DataFrame) -> None:
+        self._prepare_start_point()
+
+    def route(self, stops: pd.DataFrame) -> pd.DataFrame:
+        if self.start_point is None:
+            self._prepare_start_point()
+        points = [self.start_point] + [
+            (float(row.RoutingX), float(row.RoutingY))
+            for row in stops.itertuples()
+        ]
+        matrix = [
+            [max(0, int(round(math.hypot(a[0] - b[0], a[1] - b[1])))) for b in points]
+            for a in points
+        ]
+        return self._order(stops, matrix)
+
+
+class NetworkRoutingService(SpatialRoutingService):
+    """Optimize Wake Streets road-network distance."""
+
+    name = "network"
+
+    def __init__(
+        self,
+        resolver: MARAddressResolver,
+        network: WakeStreetNetworkProvider,
+        *,
+        time_limit_seconds: int = 10,
+    ) -> None:
+        super().__init__(resolver, time_limit_seconds=time_limit_seconds)
+        self.network = network
+        self.prepared_network = None
+
+    def prepare(self, stops: pd.DataFrame) -> None:
+        start = self._prepare_start_point()
+        points = {"__start_point__": start}
+        points.update(
+            {
+                clean(key): (float(x), float(y))
+                for key, x, y in zip(
+                    stops["_StopKey"], stops["RoutingX"], stops["RoutingY"]
+                )
+            }
+        )
+        self.prepared_network = self.network.prepare(points)
+
+    def route(self, stops: pd.DataFrame) -> pd.DataFrame:
+        if self.prepared_network is None:
+            self.prepare(stops)
+        labels = ["__start_point__", *stops["_StopKey"].map(clean).tolist()]
+        return self._order(stops, self.prepared_network.distance_matrix(labels))
 
 
 class RoutePlanner:
-    """Apply rollover priority and a routing service."""
+    """Resolve, group, and order routes while preserving precedence."""
 
     def __init__(self, services: Iterable[RoutingService]) -> None:
         self._services: dict[str, RoutingService] = {}
@@ -325,7 +544,7 @@ class RoutePlanner:
     def order_stops(
         self, stops: pd.DataFrame, method: str
     ) -> pd.DataFrame:
-        """Apply one service within the required priority tiers."""
+        """Apply one service jointly per inspector, then append unresolved stops."""
 
         try:
             router = self._services[method.casefold()]
@@ -335,25 +554,48 @@ class RoutePlanner:
                 f"{', '.join(self._services)}"
             ) from error
 
+        fallback = self._services.get("alphabetical", AlphabeticalRoutingService())
+        usable = stops.loc[stops["HasUsableAddress"]].copy()
+        prepare_error = ""
+        try:
+            router.prepare(usable)
+        except RoutingDataError as error:
+            prepare_error = str(error)
+
         routed_groups: list[pd.DataFrame] = []
         for _, inspector_stops in stops.groupby("Inspector", sort=True):
-            priorities = sorted(inspector_stops["RoutePriority"].unique())
-            for priority in priorities:
-                tier = inspector_stops.loc[
-                    inspector_stops["RoutePriority"].eq(priority)
-                ]
-                for has_address in (True, False):
-                    address_group = tier.loc[
-                        tier["HasUsableAddress"].eq(has_address)
-                    ]
-                    if not address_group.empty:
-                        routed_groups.append(router.route(address_group))
+            addressable = inspector_stops.loc[
+                inspector_stops["HasUsableAddress"]
+            ]
+            unresolved = inspector_stops.loc[
+                ~inspector_stops["HasUsableAddress"]
+            ]
+            reason = prepare_error
+            active_router = router
+            if reason:
+                active_router = fallback
+            try:
+                ordered = active_router.route(addressable)
+            except RoutingDataError as error:
+                reason = str(error)
+                active_router = fallback
+                ordered = fallback.route(addressable)
+            ordered = ordered.copy()
+            ordered["RoutingMethod"] = active_router.name
+            ordered["RoutingFallbackReason"] = reason
+            routed_groups.append(ordered)
+            if not unresolved.empty:
+                trailing = fallback.route(unresolved).copy()
+                trailing["RoutingMethod"] = (
+                    active_router.name if active_router is router else fallback.name
+                )
+                trailing["RoutingFallbackReason"] = reason
+                routed_groups.append(trailing)
 
         routed = pd.concat(routed_groups, ignore_index=True)
         routed["RouteSequence"] = (
             routed.groupby("Inspector", sort=False).cumcount() + 1
         )
-        routed["RoutingMethod"] = router.name
         return routed
 
 
@@ -365,7 +607,7 @@ class RoutePlanner:
         *,
         inspectors: Sequence[str] | None = None,
         inspection_profile: str = "all",
-        method: str = "alphabetical",
+        method: str = "euclidean",
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Return inspection-level and stop-level route plans."""
 
@@ -376,8 +618,29 @@ class RoutePlanner:
             inspectors,
             inspection_profile,
         )
+        try:
+            router = self._services[method.casefold()]
+        except KeyError as error:
+            raise ValueError(
+                f"Unknown routing method {method!r}; choose "
+                f"{', '.join(self._services)}"
+            ) from error
+        resolution_error = ""
+        try:
+            selected = router.prepare_inspections(selected)
+        except RoutingDataError as error:
+            if method.casefold() == "alphabetical":
+                raise
+            resolution_error = str(error)
+            router = self._services.get(
+                "alphabetical", AlphabeticalRoutingService()
+            )
+            selected = router.prepare_inspections(selected)
+            method = "alphabetical"
         stops = build_stops(selected)
         stops = self.order_stops(stops, method)
+        if resolution_error:
+            stops["RoutingFallbackReason"] = resolution_error
         stops["NeedsAddressReview"] = ~stops["HasUsableAddress"]
         stops.insert(0, "RouteDate", target_date)
         stops.insert(1, "RolloverSourceDate", source_date)
@@ -386,6 +649,7 @@ class RoutePlanner:
             "_StopKey",
             "RouteSequence",
             "RoutingMethod",
+            "RoutingFallbackReason",
             "NeedsAddressReview",
         ]
         detail = selected.merge(
@@ -419,7 +683,17 @@ class RoutePlanner:
             "MainAddressLine2",
             "MainAddressLine3",
             "AddressDisplay",
+            "OriginalAddresses",
+            "AddressCSAIDs",
+            "ResolvedAddressCSAIDs",
+            "AddressResolutionMethods",
+            "MARBaseAddress",
+            "MARBaseAddressKey",
+            "MARSegmentUUIDs",
+            "RoutingX",
+            "RoutingY",
             "RoutingMethod",
+            "RoutingFallbackReason",
         ]
         detail_columns = [
             "RouteDate",
@@ -440,8 +714,17 @@ class RoutePlanner:
             "MainAddressLine1",
             "MainAddressLine2",
             "MainAddressLine3",
+            "AddressCSAID",
             "AddressDisplay",
+            "AddressResolutionMethod",
+            "ResolvedAddressCSAID",
+            "MARBaseAddress",
+            "MARBaseAddressKey",
+            "MARSegmentUUID",
+            "RoutingX",
+            "RoutingY",
             "RoutingMethod",
+            "RoutingFallbackReason",
         ]
         return (
             detail.loc[:, detail_columns].reset_index(drop=True),
@@ -449,10 +732,39 @@ class RoutePlanner:
         )
 
 
-ROUTING_METHODS: dict[str, RoutingService] = {
-    AlphabeticalRoutingService.name: AlphabeticalRoutingService(),
-}
-_DEFAULT_PLANNER = RoutePlanner(ROUTING_METHODS.values())
+def build_route_planner(
+    *,
+    cache_dir: Path = DEFAULT_ROUTING_CACHE,
+    cache_days: int = 7,
+    time_limit_seconds: int = 10,
+    network_buffer_miles: float = 5.0,
+    network_max_snap_feet: float = 1000.0,
+) -> RoutePlanner:
+    resolver = MARAddressResolver(
+        cache_path=cache_dir / "mar-addresses.json",
+        cache_days=cache_days,
+    )
+    network = WakeStreetNetworkProvider(
+        cache_path=cache_dir / "wake-streets.json",
+        cache_days=cache_days,
+        buffer_miles=network_buffer_miles,
+        max_snap_feet=network_max_snap_feet,
+    )
+    return RoutePlanner(
+        [
+            EuclideanRoutingService(
+                resolver, time_limit_seconds=time_limit_seconds
+            ),
+            NetworkRoutingService(
+                resolver, network, time_limit_seconds=time_limit_seconds
+            ),
+            AlphabeticalRoutingService(),
+        ]
+    )
+
+
+_DEFAULT_PLANNER = build_route_planner()
+ROUTING_METHODS: dict[str, RoutingService] = dict(_DEFAULT_PLANNER.services)
 
 
 def create_route_plan(
@@ -462,11 +774,12 @@ def create_route_plan(
     *,
     inspectors: Sequence[str] | None = None,
     inspection_profile: str = "all",
-    method: str = "alphabetical",
+    method: str = "euclidean",
+    planner: RoutePlanner | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Create inspection-level and stop-level route sequences."""
 
-    return _DEFAULT_PLANNER.create_plan(
+    return (planner or _DEFAULT_PLANNER).create_plan(
         inspections,
         target_date,
         source_date,

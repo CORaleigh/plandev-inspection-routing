@@ -1,8 +1,9 @@
-"""Database, CSV, and EnerGov WebAPI inspection data sources."""
+"""Database, CSV, snapshot, and EnerGov WebAPI inspection sources."""
 
 from __future__ import annotations
 
 import copy
+import json
 import os
 import pickle
 import re
@@ -127,7 +128,10 @@ def load_database_inspections(
     end = max(source_date, target_date) + timedelta(days=1)
     cursor = connection.cursor()
     cursor.execute(sql, start, end, start, end)
-    return _cursor_frame(cursor)
+    frame = _cursor_frame(cursor)
+    if "AddressCSAID" not in frame and "MainAddressLine3" in frame:
+        frame["AddressCSAID"] = frame["MainAddressLine3"]
+    return frame
 
 
 def load_cached_inspections(
@@ -137,7 +141,7 @@ def load_cached_inspections(
 ) -> pd.DataFrame:
     available = pd.read_csv(path, nrows=0).columns.tolist()
     required = set(CANONICAL_COLUMNS).difference(
-        {"RequestedDate", "IsCompleted"}
+        {"RequestedDate", "IsCompleted", "AddressCSAID"}
     )
     missing = required.difference(available)
     if missing:
@@ -163,6 +167,8 @@ def load_cached_inspections(
                 chunk = chunk.rename(columns={"Complete": "IsCompleted"})
             else:
                 chunk["IsCompleted"] = False
+        if "AddressCSAID" not in chunk:
+            chunk["AddressCSAID"] = chunk["MainAddressLine3"]
         scheduled = pd.to_datetime(
             chunk["ScheduleDate"], errors="coerce"
         ).dt.date
@@ -175,6 +181,95 @@ def load_cached_inspections(
     if not selected:
         return pd.DataFrame(columns=CANONICAL_COLUMNS)
     return pd.concat(selected, ignore_index=True)
+
+
+def load_snapshot_inspections(
+    path: Path,
+) -> tuple[pd.DataFrame, date, date, dict[str, str]]:
+    """Restore canonical inspection rows from an archived route snapshot."""
+
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(snapshot, Mapping) or snapshot.get("schemaVersion") != 1:
+        raise ValueError("Unsupported route snapshot schema")
+
+    try:
+        target_date = date.fromisoformat(clean(snapshot.get("routeDate")))
+        source_date = date.fromisoformat(
+            clean(snapshot.get("rolloverSourceDate"))
+        )
+    except ValueError as error:
+        raise ValueError(
+            "Route snapshot must contain ISO routeDate and "
+            "rolloverSourceDate values"
+        ) from error
+
+    rows: list[dict[str, object]] = []
+    for inspector in snapshot.get("inspectors", []):
+        if not isinstance(inspector, Mapping):
+            continue
+        inspector_name = clean(inspector.get("name"))
+        inspector_email = clean(inspector.get("email"))
+        for stop in inspector.get("stops", []):
+            if not isinstance(stop, Mapping):
+                continue
+            stop_address = stop.get("address", {})
+            if not isinstance(stop_address, Mapping):
+                stop_address = {}
+            for item in stop.get("inspections", []):
+                if not isinstance(item, Mapping):
+                    continue
+                address = item.get("address", stop_address)
+                if not isinstance(address, Mapping):
+                    address = stop_address
+                line3 = clean(address.get("line3"))
+                rows.append(
+                    {
+                        "InspectionID": clean(item.get("id")),
+                        "InspectionNumber": clean(item.get("number")),
+                        "RequestedDate": clean(
+                            item.get("originalRequestedDate")
+                        ),
+                        "ScheduleDate": clean(
+                            item.get("originalScheduleDate")
+                        ),
+                        "IsCompleted": False,
+                        "InspectionStatus": clean(item.get("status")),
+                        "InspectionType": clean(item.get("type")),
+                        "Inspector": inspector_name,
+                        "AssignedToEmail": inspector_email,
+                        "PermitID": clean(item.get("permitId")),
+                        "PermitNumber": clean(item.get("permitNumber")),
+                        "MainAddressLine1": clean(address.get("line1")),
+                        "MainAddressLine2": clean(address.get("line2")),
+                        "MainAddressLine3": line3,
+                        "AddressCSAID": clean(address.get("csaid")) or line3,
+                        "RolledInspectionCheckbox": is_true(
+                            item.get("isRollover", stop.get("isRollover"))
+                        ),
+                    }
+                )
+
+    frame = pd.DataFrame(rows, columns=CANONICAL_COLUMNS)
+    if frame.empty:
+        raise ValueError("Route snapshot contains no inspections")
+    missing_ids = frame["InspectionID"].eq("")
+    if missing_ids.any():
+        raise ValueError("Route snapshot contains an inspection without an ID")
+    duplicate_ids = frame.loc[
+        frame["InspectionID"].duplicated(keep=False), "InspectionID"
+    ].unique()
+    if len(duplicate_ids):
+        raise ValueError(
+            "Route snapshot contains duplicate inspection IDs: "
+            + ", ".join(map(str, duplicate_ids[:5]))
+        )
+
+    metadata = {
+        "inspectionProfile": clean(snapshot.get("inspectionProfile")) or "all",
+        "source": clean(snapshot.get("source")),
+        "environment": clean(snapshot.get("environment")),
+    }
+    return frame, target_date, source_date, metadata
 
 
 def case_insensitive_get(
@@ -313,6 +408,9 @@ def api_detail_to_canonical(
         "MainAddressLine1": street,
         "MainAddressLine2": city_state_zip,
         "MainAddressLine3": case_insensitive_get(
+            main_address, "AddressLine3"
+        ),
+        "AddressCSAID": case_insensitive_get(
             main_address, "AddressLine3"
         ),
         "RolledInspectionCheckbox": is_true(rolled),
@@ -460,6 +558,9 @@ def api_search_to_canonical(
         "MainAddressLine1": address_line1,
         "MainAddressLine2": address_line2,
         "MainAddressLine3": case_insensitive_get(
+            record, "addressLine3", default=""
+        ),
+        "AddressCSAID": case_insensitive_get(
             record, "addressLine3", default=""
         ),
         "RolledInspectionCheckbox": rolled,

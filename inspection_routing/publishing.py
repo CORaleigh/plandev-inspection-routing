@@ -93,6 +93,13 @@ def build_route_snapshot(
                         if permit_id
                         else "",
                         "planningReason": clean(inspection.PlanningReason),
+                        "address": {
+                            "line1": clean(inspection.MainAddressLine1),
+                            "line2": clean(inspection.MainAddressLine2),
+                            "line3": clean(inspection.MainAddressLine3),
+                            "csaid": clean(inspection.AddressCSAID),
+                            "display": clean(inspection.AddressDisplay),
+                        },
                         "originalScheduleDate": _date_text(
                             inspection.OriginalScheduleDate
                         ),
@@ -148,7 +155,9 @@ def build_route_snapshot(
         "routingMethod": clean(routing_method),
         "inspectionProfile": clean(inspection_profile),
         "source": clean(source),
-        "environment": clean(environment) if source == "api" else "",
+        "environment": (
+            clean(environment) if source in {"api", "snapshot"} else ""
+        ),
         "summary": {
             "inspectorCount": len(inspectors),
             "stopCount": len(stops),

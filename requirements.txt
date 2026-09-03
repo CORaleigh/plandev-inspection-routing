@@ -1,0 +1,6 @@
+networkx>=3.4
+ortools>=9.10
+pandas>=2.0
+pyodbc>=5.0
+python-dotenv>=1.0
+shapely>=2.0
