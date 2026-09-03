@@ -290,8 +290,10 @@ def estimate_main(argv: Sequence[str] | None = None) -> None:
             ) from None
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+def build_route_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        add_help=add_help,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description=(
             "Build a simple inspection route sequence by inspector for one "
             "business day."
@@ -325,7 +327,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--method",
         choices=sorted(ROUTING_METHODS),
         default="euclidean",
-        help="stop-order method (default: euclidean)",
+        help="stop-order method",
     )
     parser.add_argument(
         "--inspection-profile",
@@ -340,7 +342,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--source",
         choices=("database", "csv", "api", "snapshot"),
         default="database",
-        help="inspection source (default: database)",
+        help="inspection source",
     )
     parser.add_argument("--env", type=Path, default=DEFAULT_ENV)
     parser.add_argument("--query", type=Path, default=DEFAULT_QUERY)
@@ -354,13 +356,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--environment",
         choices=("prod", "train", "test"),
         default="test",
-        help="WebAPI environment when --source api (default: test)",
+        help="WebAPI environment when --source api",
     )
     parser.add_argument(
         "--env-file",
         type=Path,
         default=DEFAULT_DOTENV,
-        help="dotenv file used only for --source api (default: project .env)",
+        help="dotenv file used only for --source api",
     )
     parser.add_argument("--api-page-size", type=int, default=100)
     parser.add_argument(
@@ -369,7 +371,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=250,
         help=(
             "hard cap on unique matching candidates across API search "
-            "scopes (default: 250)"
+            "scopes"
         ),
     )
     parser.add_argument(
@@ -378,14 +380,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=2500,
         help=(
             "hard cap on raw API rows scanned across all searches before "
-            "status/type filtering (default: 2500)"
+            "status/type filtering"
         ),
     )
     parser.add_argument(
         "--api-detail-mode",
         choices=("none", "missing", "all"),
         default="missing",
-        help="inspection detail requests after API search (default: missing)",
+        help="inspection detail requests after API search",
     )
     parser.add_argument(
         "--holiday-csv",
@@ -407,6 +409,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--network-buffer-miles", type=float, default=5.0)
     parser.add_argument("--network-max-snap-feet", type=float, default=1000.0)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
+    return parser
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = build_route_parser()
     return parser.parse_args(argv)
 
 

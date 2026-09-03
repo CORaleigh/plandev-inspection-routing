@@ -183,12 +183,15 @@ def write_json_atomic(value: Mapping[str, object], path: Path) -> Path:
 
 
 def latest_snapshot(archive_dir: Path) -> Path:
-    candidates = sorted(archive_dir.glob("route-plan-*.json"))
+    candidates = list(archive_dir.glob("route-plan-*.json"))
     if not candidates:
         raise FileNotFoundError(
             f"No route-plan JSON files found in {archive_dir}"
         )
-    return candidates[-1]
+    return max(
+        candidates,
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+    )
 
 
 def build_route_page(
