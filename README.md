@@ -15,7 +15,7 @@ The defaults use the production EnerGov API, Building Safety inspection types, E
 All `route_inspections.py` flags also work with `run_daily.py`. For example:
 
 ```
-python run_daily.py --date 2026-09-04 --inspector "Andrew Register" --routing-time-limit-seconds 5 --skip-permit-enrichment --skip-page
+python run_daily.py --date 2026-09-04 --inspector "John Smith" --routing-time-limit-seconds 5 --skip-permit-enrichment --skip-page
 ```
 
 Use `python run_daily.py --help` for route, permit-cache, request-limit, and publishing options. `--skip-permit-enrichment` and `--skip-page` stop optional later stages.
