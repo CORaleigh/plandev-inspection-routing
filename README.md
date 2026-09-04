@@ -46,6 +46,8 @@ python build_route_page.py
 
 `index.html` is the static shell. Publishing replaces `route-data.js`, which must be reviewed, committed, and pushed for GitHub Pages to update.
 
+The published page can be found at: [https://coraleigh.github.io/plandev-inspection-routing/](https://coraleigh.github.io/plandev-inspection-routing/).
+
 ## Routing rules
 
 - Start and end at `222 W Hargett St, Raleigh, NC 27601`.
