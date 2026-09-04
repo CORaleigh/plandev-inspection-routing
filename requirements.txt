@@ -4,3 +4,4 @@ pandas>=2.0
 pyodbc>=5.0
 python-dotenv>=1.0
 shapely>=2.0
+tzdata>=2024.1
