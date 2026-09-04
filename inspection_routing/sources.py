@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import json
 import os
-import pickle
 import re
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -40,26 +39,60 @@ def _select_driver(pyodbc_module: object) -> str:
     return max(drivers, key=rank)
 
 
-def connect_database(env_path: Path):
-    """Connect using the existing trusted SQL Server settings file."""
+def _load_dotenv_file(env_file: Path | None) -> None:
+    if env_file is None or not env_file.is_file():
+        return
+    try:
+        from dotenv import load_dotenv
+    except ModuleNotFoundError as error:
+        raise RuntimeError(
+            "Install the POC dependencies from requirements.txt"
+        ) from error
+    load_dotenv(dotenv_path=env_file, override=False)
+
+
+def load_database_settings(env_file: Path | None) -> dict[str, str]:
+    """Load database settings from system variables or an optional .env."""
+
+    _load_dotenv_file(env_file)
+    names = (
+        "ENERGOVDB_SERVER",
+        "ENERGOVDB_DATABASE",
+        "ENERGOVDB_TYPE",
+    )
+    settings = {
+        name: os.environ.get(name, "").strip()
+        for name in names
+    }
+    missing = [name for name in names if not settings[name]]
+    if missing:
+        raise RuntimeError(
+            "Missing database environment variable(s): "
+            + ", ".join(missing)
+        )
+    if settings["ENERGOVDB_TYPE"].casefold() != "sqlserver":
+        raise RuntimeError(
+            "Unsupported ENERGOVDB_TYPE; this POC supports sqlserver"
+        )
+    return settings
+
+
+def connect_database(env_file: Path | None):
+    """Connect to SQL Server using environment-based configuration."""
 
     try:
         import pyodbc
     except ModuleNotFoundError as error:
         raise RuntimeError(
-            'Install database dependencies with `pip install -e ".[database]"`'
+            "Install the POC dependencies from requirements.txt"
         ) from error
 
-    if not env_path.is_file():
-        raise FileNotFoundError(f"Database settings not found: {env_path}")
-    with env_path.open("rb") as file:
-        settings = pickle.load(file)["EnerGov"]
-
+    settings = load_database_settings(env_file)
     driver = _select_driver(pyodbc)
     connection_string = (
         f"DRIVER={{{driver}}};"
-        f"SERVER={settings['server']};"
-        f"DATABASE={settings['database']};"
+        f"SERVER={settings['ENERGOVDB_SERVER']};"
+        f"DATABASE={settings['ENERGOVDB_DATABASE']};"
         "Trusted_Connection=yes;Encrypt=no;TrustServerCertificate=yes;"
     )
     try:
@@ -575,14 +608,7 @@ def api_search_to_canonical(
 def load_api_credentials(env_file: Path | None) -> tuple[str, str]:
     """Load WebAPI credentials without displaying either value."""
 
-    if env_file is not None and env_file.is_file():
-        try:
-            from dotenv import load_dotenv
-        except ModuleNotFoundError as error:
-            raise RuntimeError(
-                'Install POC dependencies with `pip install -e ".[poc]"`'
-            ) from error
-        load_dotenv(dotenv_path=env_file, override=False)
+    _load_dotenv_file(env_file)
 
     username = os.environ.get("ENERGOVWEBAPI_USERNAME", "").strip()
     password = os.environ.get("ENERGOVWEBAPI_PASSWORD", "")

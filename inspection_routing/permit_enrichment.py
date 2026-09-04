@@ -26,6 +26,7 @@ from .sources import (
     unwrap_webapi_result,
     webapi_rows,
 )
+from .webapi import EnerGovWebApiClient
 
 
 DEFAULT_PERMIT_CACHE = POC_ROOT / "runtime-data" / "permit-details"
@@ -603,8 +604,6 @@ def main(argv: list[str] | None = None) -> None:
                     "The requested environment does not match the snapshot"
                 )
             username, password = load_api_credentials(args.env_file.resolve())
-            from raleigh_energov import EnerGovWebApiClient
-
             with EnerGovWebApiClient.from_credentials(
                 username,
                 password,

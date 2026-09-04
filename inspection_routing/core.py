@@ -13,12 +13,10 @@ import pandas as pd
 
 
 POC_ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = POC_ROOT.parent
-DEFAULT_ENV = PROJECT_ROOT / "env.pkl"
-DEFAULT_CACHE = PROJECT_ROOT / "data" / "inspections.csv"
+DEFAULT_CACHE = POC_ROOT / "data" / "inspections.csv"
 DEFAULT_QUERY = POC_ROOT / "queries" / "inspections_for_routing.sql"
 DEFAULT_OUTPUT = POC_ROOT / "output"
-DEFAULT_DOTENV = PROJECT_ROOT / ".env"
+DEFAULT_DOTENV = POC_ROOT / ".env"
 DEFAULT_HOLIDAYS = POC_ROOT / "data" / "holidays.csv"
 DEFAULT_ROUTING_CACHE = POC_ROOT / "runtime-data" / "routing"
 RALEIGH_TIME_ZONE = ZoneInfo("America/New_York")

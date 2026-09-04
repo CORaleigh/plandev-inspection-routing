@@ -14,7 +14,6 @@ import pandas as pd
 from .core import (
     DEFAULT_CACHE,
     DEFAULT_DOTENV,
-    DEFAULT_ENV,
     DEFAULT_HOLIDAYS,
     DEFAULT_OUTPUT,
     DEFAULT_QUERY,
@@ -46,6 +45,7 @@ from .sources import (
     load_snapshot_inspections,
     holidays_to_frame,
 )
+from .webapi import EnerGovWebApiClient
 
 
 def write_csv_atomic(frame: pd.DataFrame, path: Path) -> None:
@@ -92,7 +92,7 @@ def parse_holiday_export_args(
             "Export the EnerGov HOLIDAY table to the POC's commit-safe CSV."
         )
     )
-    parser.add_argument("--env", type=Path, default=DEFAULT_ENV)
+    parser.add_argument("--env-file", type=Path, default=DEFAULT_DOTENV)
     parser.add_argument("--output", type=Path, default=DEFAULT_HOLIDAYS)
     return parser.parse_args(argv)
 
@@ -100,7 +100,7 @@ def parse_holiday_export_args(
 def export_holidays(args: argparse.Namespace) -> Path:
     """Export the holiday table using the schema consumed by route runs."""
 
-    connection = connect_database(args.env.resolve())
+    connection = connect_database(args.env_file.resolve())
     try:
         holidays = load_holidays_from_database(connection)
         output_path = args.output.resolve()
@@ -139,7 +139,6 @@ def parse_estimate_args(
         choices=INSPECTION_PROFILES,
         default="all",
     )
-    parser.add_argument("--env", type=Path, default=DEFAULT_ENV)
     parser.add_argument("--env-file", type=Path, default=DEFAULT_DOTENV)
     parser.add_argument("--holiday-csv", type=Path)
     parser.add_argument("--api-page-size", type=int, default=100)
@@ -160,7 +159,7 @@ def run_estimate(args: argparse.Namespace) -> Path:
         if holiday_csv:
             holidays = load_holidays_from_csv(holiday_csv.resolve())
         else:
-            connection = connect_database(args.env.resolve())
+            connection = connect_database(args.env_file.resolve())
             holidays = load_holidays_from_database(connection)
 
         as_of_date = args.as_of or date.today()
@@ -168,8 +167,6 @@ def run_estimate(args: argparse.Namespace) -> Path:
         username, password = load_api_credentials(args.env_file.resolve())
         metrics: dict[str, object] = {}
         try:
-            from raleigh_energov import EnerGovWebApiClient
-
             with EnerGovWebApiClient.from_credentials(
                 username,
                 password,
@@ -344,7 +341,6 @@ def build_route_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         default="database",
         help="inspection source",
     )
-    parser.add_argument("--env", type=Path, default=DEFAULT_ENV)
     parser.add_argument("--query", type=Path, default=DEFAULT_QUERY)
     parser.add_argument(
         "--input",
@@ -362,7 +358,10 @@ def build_route_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         "--env-file",
         type=Path,
         default=DEFAULT_DOTENV,
-        help="dotenv file used only for --source api",
+        help=(
+            "optional dotenv file for API and database settings; process "
+            "environment variables take precedence"
+        ),
     )
     parser.add_argument("--api-page-size", type=int, default=100)
     parser.add_argument(
@@ -394,7 +393,7 @@ def build_route_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         type=Path,
         help=(
             "optional CSV containing HolidayDate and Name; defaults to "
-            "poc/data/holidays.csv when present, otherwise uses the "
+            "data/holidays.csv when present, otherwise uses the "
             "HOLIDAY table"
         ),
     )
@@ -461,7 +460,7 @@ def run(args: argparse.Namespace) -> Path:
                     holiday_csv.resolve()
                 )
             else:
-                connection = connect_database(args.env.resolve())
+                connection = connect_database(args.env_file.resolve())
                 holidays_by_date = load_holidays_from_database(connection)
 
             target_date, source_date = resolve_planning_dates(
@@ -470,7 +469,7 @@ def run(args: argparse.Namespace) -> Path:
 
         if args.source == "database":
             if connection is None:
-                connection = connect_database(args.env.resolve())
+                connection = connect_database(args.env_file.resolve())
             inspections = load_database_inspections(
                 connection,
                 args.query.resolve(),
@@ -486,8 +485,6 @@ def run(args: argparse.Namespace) -> Path:
                 args.env_file.resolve()
             )
             try:
-                from raleigh_energov import EnerGovWebApiClient
-
                 with EnerGovWebApiClient.from_credentials(
                     username,
                     password,
